@@ -82,7 +82,7 @@ cl::opt<std::string> OutDirectory(
 namespace llvm {
 
 template<>
-struct DOTGraphTraits<Function*> : public DefaultDOTGraphTraits {
+struct DOTGraphTraits<Function*> : public DefaultDOTGraphTraits {//重写了DOTGraphTraints代码，修改node的内容
   DOTGraphTraits(bool isSimple=true) : DefaultDOTGraphTraits(isSimple) {}
 
   static std::string getGraphName(Function *F) {
@@ -100,6 +100,13 @@ struct DOTGraphTraits<Function*> : public DefaultDOTGraphTraits {
     Node->printAsOperand(OS, false);
     return OS.str();
   }
+
+//重写某个函数内容，使得在构建function级别CFG的时候，查询CG。构建全局CFG
+
+
+
+
+
 };
 
 } // namespace llvm
@@ -328,7 +335,7 @@ bool AFLCoverage::runOnModule(Module &M) {
             if (found != std::string::npos)
               filename = filename.substr(found + 1);
 
-            bb_name = filename + ":" + std::to_string(line);
+            bb_name = filename + ":" + std::to_string(line);//为每个基本块使用文件名:行数的方法命名了
           }
 
           if (!is_target) {
@@ -397,8 +404,17 @@ bool AFLCoverage::runOnModule(Module &M) {
         std::error_code EC;
         raw_fd_ostream cfgFile(cfgFileName, EC, sys::fs::F_None);
         if (!EC) {
-          WriteGraph(cfgFile, &F, true);
+          WriteGraph(cfgFile, &F, true); //调用了什么库文件来实现呢？已知修改了DOTGraphTrait，修改了node的命名方式 GraphWrite.h
         }
+
+        /*
+        std::string cfg_file_name2 = dotfiles + "/cfg_file_name." + funcName + ".dot";
+        std::error_code EC2;
+        raw_fd_ostream cfgFile2(cfg_file_name2, EC2, sys::fs::F_None);
+        if (!EC2) {
+          WriteGraph(cfgFile2, &F, true); 
+        }
+        */
 
         if (is_target)
           ftargets << F.getName().str() << "\n";
