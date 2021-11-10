@@ -82,7 +82,7 @@ cl::opt<std::string> OutDirectory(
 namespace llvm {
 
 template<>
-struct DOTGraphTraits<Function*> : public DefaultDOTGraphTraits {//重写了DOTGraphTraints代码，修改node的内容
+struct DOTGraphTraits<Function*> : public DefaultDOTGraphTraits {//重写了DOTGraphTraints代码，修改node的内容，这个部分的代码是在LLVM画图的时候会调用的
   DOTGraphTraits(bool isSimple=true) : DefaultDOTGraphTraits(isSimple) {}
 
   static std::string getGraphName(Function *F) {
@@ -304,7 +304,7 @@ bool AFLCoverage::runOnModule(Module &M) {
       FATAL("Could not create directory %s.", dotfiles.c_str());
     }
 
-    for (auto &F : M) {
+    for (auto &F : M) {//我应该在这里添加一些代码，使得在遍历FinM的时候可以对functioncall做关联
 
       bool has_BBs = false;
       std::string funcName = F.getName().str();
@@ -321,7 +321,9 @@ bool AFLCoverage::runOnModule(Module &M) {
         std::string filename;
         unsigned line;
 
-        for (auto &I : BB) {
+        for (auto &I : BB) { //对基本块中的每条指令进行处理；#可以区分指令是否是call指令？
+          //bool iscallsite = llvm::isa<CallInst>(I); 在下面实现了
+
           getDebugLoc(&I, filename, line);
 
           /* Don't worry about external libs */
@@ -354,15 +356,21 @@ bool AFLCoverage::runOnModule(Module &M) {
               }
             }
 
-            if (auto *c = dyn_cast<CallInst>(&I)) {
+            if (auto *c = dyn_cast<CallInst>(&I)) {//动态转换，判断I是否是callinst
 
               std::size_t found = filename.find_last_of("/\\");
               if (found != std::string::npos)
                 filename = filename.substr(found + 1);
 
-              if (auto *CalledF = c->getCalledFunction()) {
-                if (!isBlacklisted(CalledF))
+              if (auto *CalledF = c->getCalledFunction()) {//得到调用函数的文件位置，被调用的函数
+                if (!isBlacklisted(CalledF)){
                   bbcalls << bb_name << "," << CalledF->getName().str() << "\n";
+
+                  //添加一条边，从当前I所在的BB指向CalledF的第一个BB
+                  
+
+                  
+                  }
               }
             }
         }
@@ -420,6 +428,9 @@ bool AFLCoverage::runOnModule(Module &M) {
           ftargets << F.getName().str() << "\n";
         fnames << F.getName().str() << "\n";
       }
+
+    //在每一个function级构建边？
+
     }
 
   } else {
