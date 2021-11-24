@@ -29,6 +29,10 @@
     ],
     "clang.completion.enable": true,
     "files.associations": {
-        "system_error": "cpp"
-    } // 效果效果比cpptools要好
+      "system_error": "cpp",
+      "deque": "cpp",
+      "string": "cpp",
+      "vector": "cpp"
+    },
+    "editor.suggest.snippetsPreventQuickSuggestions": false // 效果效果比cpptools要好
 }

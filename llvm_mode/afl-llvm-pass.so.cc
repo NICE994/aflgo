@@ -350,7 +350,7 @@ bool AFLCoverage::runOnModule(Module &M) {
                 std::string target_file = target.substr(0, pos);
                 unsigned int target_line = atoi(target.substr(pos + 1).c_str());
 
-                if (!target_file.compare(filename) && target_line == line)
+                if (!target_file.compare(filename) && target_line == line) //比较当前指令是否是target
                   is_target = true;
 
               }
@@ -378,6 +378,7 @@ bool AFLCoverage::runOnModule(Module &M) {
         if (!bb_name.empty()) {
 
           BB.setName(bb_name + ":");
+          /*xy
           if (!BB.hasName()) {
             std::string newname = bb_name + ":";
             Twine t(newname);
@@ -386,6 +387,7 @@ bool AFLCoverage::runOnModule(Module &M) {
             MallocAllocator Allocator;
             BB.setValueName(ValueName::Create(NameRef, Allocator));
           }
+          */
 
           bbnames << BB.getName().str() << "\n";
           has_BBs = true;
@@ -412,7 +414,7 @@ bool AFLCoverage::runOnModule(Module &M) {
         std::error_code EC;
         raw_fd_ostream cfgFile(cfgFileName, EC, sys::fs::F_None);
         if (!EC) {
-          WriteGraph(cfgFile, &F, true); //调用了什么库文件来实现呢？已知修改了DOTGraphTrait，修改了node的命名方式 GraphWrite.h
+          //WriteGraph(cfgFile, &F, true); //不再对function级画Intraprocedure控制流图
         }
 
         /*
@@ -430,6 +432,7 @@ bool AFLCoverage::runOnModule(Module &M) {
       }
 
     //在每一个function级构建边？
+    //构建ICFG
 
     }
 
