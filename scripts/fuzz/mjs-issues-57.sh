@@ -1,4 +1,7 @@
+export AFLGO=/home/aflgo
+
 git clone https://github.com/cesanta/mjs.git mjs-issues-57
+git clone https://gitee.com/suyee0516/mjs.git mjs-issues-57
 cd mjs-issues-57; git checkout d6c06a6
 mkdir obj-aflgo; mkdir obj-aflgo/temp
 export SUBJECT=$PWD; export TMP_DIR=$PWD/obj-aflgo/temp
@@ -7,6 +10,10 @@ export LDFLAGS=-lpthread
 export ADDITIONAL="-targets=$TMP_DIR/BBtargets.txt -outdir=$TMP_DIR -flto -fuse-ld=gold -Wl,-plugin-opt=save-temps"
 echo $'mjs.c:13732' > $TMP_DIR/BBtargets.txt
 $CC -DMJS_MAIN mjs.c $ADDITIONAL -ldl -g -o mjs-bin
+
+bc->SVF 
+dot->
+
 cat $TMP_DIR/BBnames.txt | rev | cut -d: -f2- | rev | sort | uniq > $TMP_DIR/BBnames2.txt && mv $TMP_DIR/BBnames2.txt $TMP_DIR/BBnames.txt
 cat $TMP_DIR/BBcalls.txt | sort | uniq > $TMP_DIR/BBcalls2.txt && mv $TMP_DIR/BBcalls2.txt $TMP_DIR/BBcalls.txt
 $AFLGO/scripts/genDistance.sh $SUBJECT $TMP_DIR mjs-bin
