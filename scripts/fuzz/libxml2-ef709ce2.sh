@@ -1,5 +1,12 @@
 export AFLGO=/home/aflgo
 git clone https://gitlab.gnome.org/GNOME/libxml2.git libxml2_ef709ce2
+
+# valid.c:2637
+# valid.c:2638
+# valid.c:2639
+# valid.c:2640
+
+
 cd libxml2_ef709ce2; git checkout ef709ce2
 mkdir obj-aflgo; mkdir obj-aflgo/temp
 export SUBJECT=$PWD; export TMP_DIR=$PWD/obj-aflgo/temp

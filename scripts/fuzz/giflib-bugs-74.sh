@@ -16,4 +16,5 @@ CFLAGS="-distance=$TMP_DIR/distance.cfg.txt" CXXFLAGS="-distance=$TMP_DIR/distan
 make clean; make -j4
 mkdir in; echo "GIF" > in/in
 $AFLGO/afl-fuzz -m none -z exp -c 45m -i in -o out util/gifsponge
+$AFLGO/afl-fuzz -m none  -i in -o out util/gifsponge
 # mkdir out; for i in {1..10}; do timeout -sHUP 60m $AFLGO/afl-fuzz -m none -z exp -c 45m -i in -o "out/out_$i" util/gifsponge > /dev/null 2>&1 & done
