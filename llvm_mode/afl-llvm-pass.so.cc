@@ -42,19 +42,14 @@
 
 #include "llvm/ADT/Statistic.h"
 #include "llvm/IR/IRBuilder.h"
-// #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Debug.h"
-// #include "llvm/Transforms/IPO/PassManagerBuilder.h"
+#include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Analysis/CFGPrinter.h"
-
-#include "llvm/Passes/PassPlugin.h"
-  #include "llvm/Passes/PassBuilder.h"
-  #include "llvm/IR/PassManager.h"
-
 
 #if defined(LLVM34)
 #include "llvm/DebugInfo.h"
@@ -117,25 +112,15 @@ struct DOTGraphTraits<Function*> : public DefaultDOTGraphTraits {//重写了DOTG
 } // namespace llvm
 
 namespace {
-  class AFLCoverage : public PassInfoMixin<AFLCoverage> {
 
- public:
-  AFLCoverage() {
+  class AFLCoverage : public ModulePass {
 
+    public:
 
-  // class AFLCoverage : public ModulePass {
+      static char ID;
+      AFLCoverage() : ModulePass(ID) { }
 
-    // public:
-
-      // static char ID;
-      // AFLCoverage() : ModulePass(ID) {
-
-        // initInstrumentList();
-  }
-
-  PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM);
-
-      // bool runOnModule(Module &M) override;
+      bool runOnModule(Module &M) override;
 
       // StringRef getPassName() const override {
       //  return "American Fuzzy Lop Instrumentation";
@@ -145,30 +130,7 @@ namespace {
 
 }
 
-extern "C" ::llvm::PassPluginLibraryInfo LLVM_ATTRIBUTE_WEAK
-llvmGetPassPluginInfo() {
-
-  return {LLVM_PLUGIN_API_VERSION, "AFLCoverage", "v0.1",
-          /* lambda to insert our pass into the pass pipeline. */
-          [](PassBuilder &PB) {
-
-    // #if LLVM_VERSION_MAJOR <= 13
-            using OptimizationLevel = typename PassBuilder::OptimizationLevel;
-    // #endif
-            PB.registerOptimizerLastEPCallback(
-                [](ModulePassManager &MPM, OptimizationLevel OL) {
-
-                  MPM.addPass(AFLCoverage());
-
-                });
-
-  
-
-          }};
-
-}
-
-// char AFLCoverage::ID = 0;
+char AFLCoverage::ID = 0;
 
 static void getDebugLoc(const Instruction *I, std::string &Filename,
                         unsigned &Line) {
@@ -223,20 +185,14 @@ static bool isBlacklisted(const Function *F) {
   return false;
 }
 
-PreservedAnalyses AFLCoverage::run(Module &M, ModuleAnalysisManager &MAM) {
-// bool AFLCoverage::runOnModule(Module &M) {
-  errs() << "runOnModule\n";
-
-  auto PA = PreservedAnalyses::all();
-
+bool AFLCoverage::runOnModule(Module &M) {
 
   bool is_aflgo = false;
   bool is_aflgo_preprocessing = false;
 
   if (!TargetsFile.empty() && !DistanceFile.empty()) {
     FATAL("Cannot specify both '-targets' and '-distance'!");
-    return PA;
-    // return false;
+    return false;
   }
 
   std::list<std::string> targets;
@@ -247,8 +203,7 @@ PreservedAnalyses AFLCoverage::run(Module &M, ModuleAnalysisManager &MAM) {
 
     if (OutDirectory.empty()) {
       FATAL("Provide output directory '-outdir <directory>'");
-      return PA;
-    // return false;
+      return false;
     }
 
     std::ifstream targetsfile(TargetsFile);
@@ -281,8 +236,7 @@ PreservedAnalyses AFLCoverage::run(Module &M, ModuleAnalysisManager &MAM) {
 
     } else {
       FATAL("Unable to find %s.", DistanceFile.c_str());
-      return PA;
-    // return false;
+      return false;
     }
 
   }
@@ -647,22 +601,21 @@ PreservedAnalyses AFLCoverage::run(Module &M, ModuleAnalysisManager &MAM) {
 
   }
 
-  return PA;
-  // return true;
+  return true;
 
 }
 
 
-// static void registerAFLPass(const PassManagerBuilder &,
-//                             legacy::PassManagerBase &PM) {
+static void registerAFLPass(const PassManagerBuilder &,
+                            legacy::PassManagerBase &PM) {
 
-//   PM.add(new AFLCoverage());
+  PM.add(new AFLCoverage());
 
-// }
+}
 
 
-// static RegisterStandardPasses RegisterAFLPass(
-//     PassManagerBuilder::EP_OptimizerLast, registerAFLPass);
+static RegisterStandardPasses RegisterAFLPass(
+    PassManagerBuilder::EP_OptimizerLast, registerAFLPass);
 
-// static RegisterStandardPasses RegisterAFLPass0(
-//     PassManagerBuilder::EP_EnabledOnOptLevel0, registerAFLPass);
+static RegisterStandardPasses RegisterAFLPass0(
+    PassManagerBuilder::EP_EnabledOnOptLevel0, registerAFLPass);

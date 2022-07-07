@@ -62,7 +62,7 @@ if [ $RESUME -le $STEP ]; then
 
       echo "($STEP) Constructing CG for $binary.."
       prefix="$TMPDIR/dot-files/$(basename $binary)"
-      while ! opt -dot-callgraph $binary.0.0.*.bc -callgraph-dot-filename-prefix $prefix >/dev/null 2> $TMPDIR/step${STEP}.log ; do
+      while ! opt -enable-new-pm=0 -dot-callgraph $binary.0.0.*.bc -callgraph-dot-filename-prefix $prefix >/dev/null 2> $TMPDIR/step${STEP}.log ; do
         echo -e "\e[93;1m[!]\e[0m Could not generate call graph. Repeating.."
       done
 
@@ -79,7 +79,7 @@ if [ $RESUME -le $STEP ]; then
 
     echo "($STEP) Constructing CG for $fuzzer.."
     prefix="$TMPDIR/dot-files/$(basename $fuzzer)"
-    while ! opt -dot-callgraph $fuzzer.0.0.*.bc -callgraph-dot-filename-prefix $prefix >/dev/null 2> $TMPDIR/step${STEP}.log ; do
+    while ! opt -enable-new-pm=0 -dot-callgraph $fuzzer.0.0.*.bc -callgraph-dot-filename-prefix $prefix >/dev/null 2> $TMPDIR/step${STEP}.log ; do
       echo -e "\e[93;1m[!]\e[0m Could not generate call graph. Repeating.."
     done
 
