@@ -145,14 +145,21 @@ static s32 forksrv_pid,               /* PID of the fork server           */
            out_dir_fd = -1;           /* FD of the lock file              */
 
 EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
+EXP_ST u8* trace_bits_suf;                /* SHM with instrumentation bitmap  */
+EXP_ST u8* trace_bits_suf_bb;                /* SHM with instrumentation bitmap  */
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
+           virgin_bits_suf[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
+           virgin_bits_suf_target[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
+           virgin_bits_suf_bb[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
            virgin_crash[MAP_SIZE];    /* Bits we haven't seen in crashes  */
 
 static u8  var_bytes[MAP_SIZE];       /* Bytes that appear to be variable */
 
 static s32 shm_id;                    /* ID of the SHM region             */
+static s32 shm_id_suf;                    /* ID of the SHM region             */
+static s32 shm_id_suf_bb;                    /* ID of the SHM region             */
 
 static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    clear_screen = 1,  /* Window resized?                  */
@@ -237,6 +244,7 @@ struct queue_entry {
 
   u8* fname;                          /* File name for the test case      */
   u32 len;                            /* Input length                     */
+  u64 ttarget_excutes;
 
   u8  cal_failed,                     /* Calibration failed?              */
       trim_done,                      /* Trimmed?                         */
@@ -248,6 +256,8 @@ struct queue_entry {
       fs_redundant;                   /* Marked as redundant in the fs?   */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
+      bitmap_size_suffix,
+      bitmap_size_suffix_target,
       exec_cksum;                     /* Checksum of the execution trace  */
 
   u64 exec_us,                        /* Execution time (us)              */
@@ -283,6 +293,8 @@ static u32 extras_cnt;                /* Total number of tokens read      */
 
 static struct extra_data* a_extras;   /* Automatically selected extras    */
 static u32 a_extras_cnt;              /* Total number of tokens available */
+
+static int TTarget_seed = 0;
 
 static double cur_distance = -1.0;     /* Distance of executed input       */
 static double max_distance = -1.0;     /* Maximal distance for any input   */
@@ -896,6 +908,76 @@ EXP_ST void read_bitmap(u8* fname) {
 }
 
 
+//更新前后缀的bitmap
+static inline u8 presuf_has_new_bits(u8* virgin_map, u8* trace_map) {
+#ifdef __x86_64__
+
+  u64* current = (u64*)trace_map;
+  u64* virgin  = (u64*)virgin_map;
+
+  u32  i = (MAP_SIZE >> 3);
+
+#else
+  u32* current = (u32*)trace_bits;
+  u32* virgin  = (u32*)virgin_map;
+
+  u32  i = (MAP_SIZE >> 2);
+
+#endif /* ^__x86_64__ */
+  
+  u8   ret = 0;
+
+  while (i--) {
+
+    /* Optimize for (*current & *virgin) == 0 - i.e., no bits in current bitmap
+       that have not been already cleared from the virgin map - since this will
+       almost always be the case. */
+
+    if (unlikely(*current) && unlikely(*current & *virgin)) {
+
+      if (likely(ret < 2)) {
+
+        u8* cur = (u8*)current;
+        u8* vir = (u8*)virgin;
+
+        /* Looks like we have not found any new bytes yet; see if any non-zero
+           bytes in current[] are pristine in virgin[]. */
+
+#ifdef __x86_64__
+
+        if ((cur[0] && vir[0] == 0xff) || (cur[1] && vir[1] == 0xff) ||
+            (cur[2] && vir[2] == 0xff) || (cur[3] && vir[3] == 0xff) ||
+            (cur[4] && vir[4] == 0xff) || (cur[5] && vir[5] == 0xff) ||
+            (cur[6] && vir[6] == 0xff) || (cur[7] && vir[7] == 0xff)) ret = 2;
+        else ret = 1;
+
+#else
+
+        if ((cur[0] && vir[0] == 0xff) || (cur[1] && vir[1] == 0xff) ||
+            (cur[2] && vir[2] == 0xff) || (cur[3] && vir[3] == 0xff)) ret = 2;
+        else ret = 1;
+
+#endif /* ^__x86_64__ */
+
+      }
+
+      //修改virgin_bits
+      *virgin &= ~*current;
+
+    }
+
+    current++;
+    virgin++;
+
+  }
+
+  //if (ret && virgin_map == virgin_bits) bitmap_changed = 1;
+
+  return ret;
+}
+
+
+
 /* Check if the current execution path brings anything new to the table.
    Update virgin bits to reflect the finds. Returns 1 if the only change is
    the hit-count for a particular tuple; 2 if there are new tuples seen. 
@@ -1248,6 +1330,8 @@ static inline void classify_counts(u32* mem) {
 static void remove_shm(void) {
 
   shmctl(shm_id, IPC_RMID, NULL);
+  shmctl(shm_id_suf, IPC_RMID, NULL);
+  shmctl(shm_id_suf_bb, IPC_RMID, NULL);
 
 }
 
@@ -1389,20 +1473,31 @@ static void cull_queue(void) {
 EXP_ST void setup_shm(void) {
 
   u8* shm_str;
+  u8* shm_str_suf;
+  u8* shm_str_suf_bb;
 
   if (!in_bitmap) memset(virgin_bits, 255, MAP_SIZE);
+  if (!in_bitmap) memset(virgin_bits_suf, 255, MAP_SIZE);
+  if (!in_bitmap) memset(virgin_bits_suf_target, 255, MAP_SIZE);
+  if (!in_bitmap) memset(virgin_bits_suf_bb, 255, MAP_SIZE);
 
   memset(virgin_tmout, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
 
   /* Allocate 24 byte more for distance info */
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 16, IPC_CREAT | IPC_EXCL | 0600);
+  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 16 + 16, IPC_CREAT | IPC_EXCL | 0600);
+  shm_id_suf = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+  shm_id_suf_bb = shmget(IPC_PRIVATE, MAP_SIZE , IPC_CREAT | IPC_EXCL | 0600);
 
   if (shm_id < 0) PFATAL("shmget() failed");
+  if (shm_id_suf < 0) PFATAL("shmget() failed");
+  if (shm_id_suf_bb < 0) PFATAL("shmget() failed");
 
   atexit(remove_shm);
 
   shm_str = alloc_printf("%d", shm_id);
+  shm_str_suf = alloc_printf("%d", shm_id_suf);
+  shm_str_suf_bb = alloc_printf("%d", shm_id_suf_bb);
 
   /* If somebody is asking us to fuzz instrumented binaries in dumb mode,
      we don't want them to detect instrumentation, since we won't be sending
@@ -1410,12 +1505,20 @@ EXP_ST void setup_shm(void) {
      later on, perhaps? */
 
   if (!dumb_mode) setenv(SHM_ENV_VAR, shm_str, 1);
+  if (!dumb_mode) setenv(SHM_ENV_VAR_SUF, shm_str_suf, 1);
+  if (!dumb_mode) setenv(SHM_ENV_VAR_SUF_BB, shm_str_suf_bb, 1);
 
   ck_free(shm_str);
+  ck_free(shm_str_suf);
+  ck_free(shm_str_suf_bb);
 
   trace_bits = shmat(shm_id, NULL, 0);
+  trace_bits_suf = shmat(shm_id_suf, NULL, 0);
+  trace_bits_suf_bb = shmat(shm_id_suf_bb, NULL, 0);
   
   if (!trace_bits) PFATAL("shmat() failed");
+  if (!trace_bits_suf) PFATAL("shmat() failed");
+  if (!trace_bits_suf_bb) PFATAL("shmat() failed");
 
 }
 
@@ -2320,7 +2423,9 @@ static u8 run_target(char** argv, u32 timeout) {
      must prevent any earlier operations from venturing into that
      territory. */
 
-  memset(trace_bits, 0, MAP_SIZE + 16);
+  memset(trace_bits, 0, MAP_SIZE + 16 + 16);
+  memset(trace_bits_suf, 0, MAP_SIZE);
+  memset(trace_bits_suf_bb, 0, MAP_SIZE );
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
@@ -2632,6 +2737,9 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
       fault = FAULT_NOINST;
       goto abort_calibration;
     }
+    
+  u64* targetSeed = (u64*) (trace_bits + MAP_SIZE + 24);
+  q->ttarget_excutes = (u64 ) (*targetSeed);
 
     cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
 
@@ -2640,7 +2748,13 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
     if (q->distance <= 0) {
 
       /* This calculates cur_distance */
-      has_new_bits(virgin_bits);
+      u8 hnb =has_new_bits(virgin_bits);
+      if (hnb > new_bits) new_bits = hnb;
+      presuf_has_new_bits(virgin_bits_suf, trace_bits_suf);
+      if(q->ttarget_excutes ){
+        presuf_has_new_bits(virgin_bits_suf_target, trace_bits_suf);
+        presuf_has_new_bits(virgin_bits_suf_bb, trace_bits_suf_bb);
+      }
 
       q->distance = cur_distance;
       if (cur_distance > 0) {
@@ -2660,6 +2774,11 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
       u8 hnb = has_new_bits(virgin_bits);
       if (hnb > new_bits) new_bits = hnb;
+      presuf_has_new_bits(virgin_bits_suf, trace_bits_suf);
+      if(q->ttarget_excutes ){
+        presuf_has_new_bits(virgin_bits_suf_target, trace_bits_suf);
+        presuf_has_new_bits(virgin_bits_suf_bb, trace_bits_suf_bb);
+      }
 
       if (q->exec_cksum) {
 
@@ -2699,6 +2818,13 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   q->exec_us     = (stop_us - start_us) / stage_max;
   q->bitmap_size = count_bytes(trace_bits);
+  q->bitmap_size_suffix = count_bytes(trace_bits_suf);
+  if(q->ttarget_excutes > 0){
+    q->bitmap_size_suffix_target = q->bitmap_size_suffix;
+  }
+  else{
+    q->bitmap_size_suffix_target = 0;
+  }
   q->handicap    = handicap;
   q->cal_failed  = 0;
 
@@ -2790,6 +2916,9 @@ static void perform_dry_run(char** argv) {
     close(fd);
 
     res = calibrate_case(argv, q, use_mem, 0, 1);
+    if(q->ttarget_excutes>0){
+      TTarget_seed++;
+    }
     ck_free(use_mem);
 
     if (stop_soon) return;
@@ -3191,6 +3320,16 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  keeping = 0, res;
 
   if (fault == crash_mode) {
+    u64 *targetSeed = (u64 *)(trace_bits + MAP_SIZE + 24);
+    u64 tt=(u64)(*targetSeed);
+    //增加一种interesting的种子：在virgin_bits_suffix_target中有新的覆盖率（可能之前没有触发target的种子执行了）
+    u8 hnb_suffix_target = 0;
+    if(tt>0){
+      presuf_has_new_bits(virgin_bits_suf_target, trace_bits_suf);
+      presuf_has_new_bits(virgin_bits_suf_bb, trace_bits_suf_bb);
+    }
+    hnb_suffix_target = presuf_has_new_bits(virgin_bits_suf, trace_bits_suf);
+
 
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
@@ -3234,6 +3373,9 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     ck_write(fd, mem, len, fn);
     close(fd);
 
+    if(queue_top->ttarget_excutes>0){
+      TTarget_seed++;
+    }
     keeping = 1;
 
   }
@@ -3327,14 +3469,24 @@ keep_as_crash:
         if (!has_new_bits(virgin_crash)) return keeping;
 
       }
+      
+    u64 *targetSeed = (u64 *)(trace_bits + MAP_SIZE + 24);
+    u64 tt = (u64)(*targetSeed);
 
       if (!unique_crashes) write_crash_readme();
 
 #ifndef SIMPLE_FILES
 
-      fn = alloc_printf("%s/crashes/id:%06llu,%llu,sig:%02u,%s", out_dir,
+      if(tt){
+        fn = alloc_printf("%s/crashes/target_id:%06llu,%llu,sig:%02u,%s", out_dir,
                         unique_crashes, get_cur_time() - start_time,
                         kill_signal, describe_op(0));
+
+      }else{
+        fn = alloc_printf("%s/crashes/id:%06llu,%llu,sig:%02u,%s", out_dir,
+                          unique_crashes, get_cur_time() - start_time,
+                          kill_signal, describe_op(0));
+      }
 
 #else
 
@@ -3444,7 +3596,7 @@ static void find_timeout(void) {
 
 /* Update stats file for unattended monitoring. */
 
-static void write_stats_file(double bitmap_cvg, double stability, double eps) {
+static void write_stats_file(double bitmap_cvg,double sufbit_cvg,double tarsufbit_cvg,double tarsufbitbb_cvg, double stability, double eps) {
 
   static double last_bcvg, last_stab, last_eps;
 
@@ -3492,6 +3644,10 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              "variable_paths    : %u\n"
              "stability         : %0.02f%%\n"
              "bitmap_cvg        : %0.02f%%\n"
+             "sufbit_cvg        : %0.02f%%\n"
+             "tarsufbit_cvg        : %0.02f%%\n"
+             "tarsufbitbb_cvg        : %0.02f%%\n"
+             "TTargetSeeds      : %u\n"
              "unique_crashes    : %llu\n"
              "unique_hangs      : %llu\n"
              "last_path         : %llu\n"
@@ -3507,7 +3663,7 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              queue_cycle ? (queue_cycle - 1) : 0, total_execs, eps,
              queued_paths, queued_favored, queued_discovered, queued_imported,
              max_depth, current_entry, pending_favored, pending_not_fuzzed,
-             queued_variable, stability, bitmap_cvg, unique_crashes,
+             queued_variable, stability, bitmap_cvg,sufbit_cvg,tarsufbit_cvg,tarsufbitbb_cvg,TTarget_seed,  unique_crashes,
              unique_hangs, last_path_time / 1000, last_crash_time / 1000,
              last_hang_time / 1000, total_execs - last_crash_execs,
              exec_tmout, use_banner,
@@ -3944,9 +4100,16 @@ static void show_stats(void) {
   static u64 last_stats_ms, last_plot_ms, last_ms, last_execs;
   static double avg_exec;
   double t_byte_ratio, stab_ratio;
+  double t_byte_ratio_suffix;
+  double t_byte_ratio_suffix_target;
+  double t_byte_ratio_suffix_bb;
 
   u64 cur_ms;
   u32 t_bytes, t_bits;
+  u32 t_bytes_suffix;
+  u32 t_bytes_suffix_target;
+  u32 t_bytes_suffix_bb;
+  
 
   u32 banner_len, banner_pad;
   u8  tmp[256];
@@ -3996,6 +4159,16 @@ static void show_stats(void) {
   t_bytes = count_non_255_bytes(virgin_bits);
   t_byte_ratio = ((double)t_bytes * 100) / MAP_SIZE;
 
+  t_bytes_suffix = count_non_255_bytes(virgin_bits_suf);
+  t_byte_ratio_suffix = ((double)t_bytes_suffix * 100) / MAP_SIZE;
+  
+  t_bytes_suffix_target = count_non_255_bytes(virgin_bits_suf_target);
+  t_byte_ratio_suffix_target = ((double)t_bytes_suffix_target * 100) / MAP_SIZE;
+  
+  t_bytes_suffix_bb = count_non_255_bytes(virgin_bits_suf_bb);
+  // t_byte_ratio_suffix_bb = ((double)t_bytes_suffix_bb * 100) / MAP_SIZE;
+  t_byte_ratio_suffix_bb = ((double)t_bytes_suffix_bb * 1) / 1;
+
   if (t_bytes) 
     stab_ratio = 100 - ((double)var_byte_count) * 100 / t_bytes;
   else
@@ -4006,7 +4179,7 @@ static void show_stats(void) {
   if (cur_ms - last_stats_ms > STATS_UPDATE_SEC * 1000) {
 
     last_stats_ms = cur_ms;
-    write_stats_file(t_byte_ratio, stab_ratio, avg_exec);
+    write_stats_file(t_byte_ratio,t_byte_ratio_suffix,t_byte_ratio_suffix_target,t_byte_ratio_suffix_bb, stab_ratio, avg_exec);
     save_auto();
     write_bitmap();
 
@@ -4179,6 +4352,24 @@ static void show_stats(void) {
 
   sprintf(tmp, "%s (%0.02f%%)", DI(cur_skipped_paths),
           ((double)cur_skipped_paths * 100) / queued_paths);
+  
+  sprintf(tmp, "%0.02f%% / %0.02f%%", ((double)queue_cur->bitmap_size_suffix_target) * 100 / MAP_SIZE, t_byte_ratio_suffix_target);
+
+  SAYF(bV bSTOP "  target density : " cRST "%-17s " bSTG bV bSTOP, tmp);
+
+  sprintf(tmp, "%0.02f%% / %0.02f%%", ((double)queue_cur->bitmap_size_suffix) * 
+          100 / MAP_SIZE, t_byte_ratio_suffix);
+
+  SAYF(" sufmap density : %-21s " bSTG bV "\n",  tmp);
+
+  sprintf(tmp, " %0.02f",  t_byte_ratio_suffix_bb);
+
+  SAYF(bV bSTOP "targetbb density : " cRST "%-17s " bSTG bV bSTOP, tmp);
+
+  sprintf(tmp, "%0.02f%% / %0.02f%%", ((double)queue_cur->bitmap_size_suffix) * 
+          100 / MAP_SIZE, t_byte_ratio_suffix);
+
+  SAYF("   NULL density : %-21s " bSTG bV "\n",  tmp);
 
   SAYF(bV bSTOP " paths timed out : " cRST "%-17s " bSTG bV, tmp);
 
@@ -4311,6 +4502,12 @@ static void show_stats(void) {
   SAYF(bV bSTOP "  dictionary : " cRST "%-37s " bSTG bV bSTOP
        "  imported : " cRST "%-10s " bSTG bV "\n", tmp,
        sync_id ? DI(queued_imported) : (u8*)"n/a");
+  
+  
+  SAYF(bV bSTOP "TTargetSeeds : " cRST "%-36d  " bSTG bV bSTOP
+       "     ratio : " cRST "%-10s " bSTG bV "\n", TTarget_seed,tmp);
+       
+
 
   sprintf(tmp, "%s/%s, %s/%s",
           DI(stage_finds[STAGE_HAVOC]), DI(stage_cycles[STAGE_HAVOC]),
@@ -4870,7 +5067,7 @@ static u32 calculate_score(struct queue_entry* q) {
   if (perf_score > HAVOC_MAX_MULT * 100) perf_score = HAVOC_MAX_MULT * 100;
 
   /* AFLGO-DEBUGGING */
-  // fprintf(stderr, "[Time %llu] q->distance: %4lf, max_distance: %4lf min_distance: %4lf, T: %4.3lf, power_factor: %4.3lf, adjusted perf_score: %4d\n", t, q->distance, max_distance, min_distance, T, power_factor, perf_score);
+  fprintf(stderr, "[Time %llu] q->distance: %4lf, max_distance: %4lf min_distance: %4lf, T: %4.3lf, power_factor: %4.3lf, adjusted perf_score: %4d\n", t, q->distance, max_distance, min_distance, T, power_factor, perf_score);
 
   return perf_score;
 
@@ -8176,7 +8373,7 @@ int main(int argc, char** argv) {
 
   seek_to = find_start_position();
 
-  write_stats_file(0, 0, 0);
+  write_stats_file(0,0,0,0, 0, 0);
   save_auto();
 
   if (stop_soon) goto stop_fuzzing;
@@ -8252,7 +8449,7 @@ int main(int argc, char** argv) {
   if (queue_cur) show_stats();
 
   write_bitmap();
-  write_stats_file(0, 0, 0);
+  write_stats_file(0, 0, 0, 0, 0, 0);
   save_auto();
 
 stop_fuzzing:

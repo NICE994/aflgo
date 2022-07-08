@@ -65,8 +65,13 @@ static const unsigned int prime_2 = 5009;
    is used for instrumentation output before __afl_map_shm() has a chance to run.
    It will end up as .comm, so it shouldn't be too wasteful. */
 
-u8  __afl_area_initial[MAP_SIZE + 16];
+u8  __afl_area_initial[MAP_SIZE + 16 + 16];
+u8  __afl_area_initial_suf[MAP_SIZE];
+u8  __afl_area_initial_bb[MAP_SIZE];
+
 u8* __afl_area_ptr = __afl_area_initial;
+u8* __afl_area_ptr_suf = __afl_area_initial_suf;
+u8* __afl_area_ptr_suf_bb = __afl_area_initial_bb;
 
 __thread u32 __afl_prev_loc;
 
@@ -81,25 +86,35 @@ static u8 is_persistent;
 static void __afl_map_shm(void) {
 
   u8 *id_str = getenv(SHM_ENV_VAR);
+  u8 *id_str_suf = getenv(SHM_ENV_VAR_SUF);
+  u8 *id_str_suf_bb = getenv(SHM_ENV_VAR_SUF_BB);
 
   /* If we're running under AFL, attach to the appropriate region, replacing the
      early-stage __afl_area_initial region that is needed to allow some really
      hacky .init code to work correctly in projects such as OpenSSL. */
 
-  if (id_str) {
+  if (id_str && id_str_suf && id_str_suf_bb) {
 
     u32 shm_id = atoi(id_str);
+    u32 shm_id_suf = atoi(id_str_suf);
+    u32 shm_id_suf_bb = atoi(id_str_suf_bb);
 
     __afl_area_ptr = shmat(shm_id, NULL, 0);
+    __afl_area_ptr_suf = shmat(shm_id_suf, NULL, 0);
+    __afl_area_ptr_suf_bb = shmat(shm_id_suf_bb, NULL, 0);
 
     /* Whooooops. */
 
     if (__afl_area_ptr == (void *)-1) _exit(1);
+    if (__afl_area_ptr_suf == (void *)-1) _exit(1);
+    if (__afl_area_ptr_suf_bb == (void *)-1) _exit(1);
 
     /* Write something into the bitmap so that even with low AFL_INST_RATIO,
        our parent doesn't give up on us. */
 
     __afl_area_ptr[0] = 1;
+    __afl_area_ptr_suf[0] = 1;
+    __afl_area_ptr_suf_bb[0] = 1;
 
   }
 
@@ -203,8 +218,12 @@ int __afl_persistent_loop(unsigned int max_cnt) {
 
     if (is_persistent) {
 
-      memset(__afl_area_ptr, 0, MAP_SIZE + 16);
+      memset(__afl_area_ptr, 0, MAP_SIZE + 16 + 16);
+      memset(__afl_area_ptr_suf, 0, MAP_SIZE);
+      memset(__afl_area_ptr_suf_bb, 0, MAP_SIZE);
       __afl_area_ptr[0] = 1;
+      __afl_area_ptr_suf[0] = 1;
+      __afl_area_ptr_suf_bb[0] = 1;
       __afl_prev_loc = 0;
     }
 
@@ -221,6 +240,8 @@ int __afl_persistent_loop(unsigned int max_cnt) {
       raise(SIGSTOP);
 
       __afl_area_ptr[0] = 1;
+      __afl_area_ptr_suf[0] = 1;
+      __afl_area_ptr_suf_bb[0] = 1;
       __afl_prev_loc = 0;
 
       return 1;
@@ -232,6 +253,8 @@ int __afl_persistent_loop(unsigned int max_cnt) {
          dummy output region. */
 
       __afl_area_ptr = __afl_area_initial;
+      __afl_area_ptr_suf = __afl_area_initial_suf;
+      __afl_area_ptr_suf_bb = __afl_area_initial_bb;
 
     }
 

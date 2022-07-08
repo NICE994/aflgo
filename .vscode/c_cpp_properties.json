@@ -1,23 +1,25 @@
 {
-    "configurations": [
-        {
-            "name": "MinGW",
-            "intelliSenseMode": "clang-x64",
-            "compilerPath": "D:\\LLVM\\bin\\gcc.exe",
-            "includePath": [
-                "${workspaceFolder}"
-            ],
-            "defines": [],
-            "browse": {
-                "path": [
-                    "${workspaceFolder}"
-                ],
-                "limitSymbolsToIncludedHeaders": true,
-                "databaseFilename": ""
-            },
-            "cStandard": "c11",
-            "cppStandard": "c++17"
-        }
-    ],
-    "version": 4
+  "configurations": [
+      {
+          "name": "Win32",
+          "includePath": [
+              "${workspaceFolder}/**",
+              "D:\\LLVM\\x86_64-w64-mingw32\\include",
+              // "E:\\llvm\\llvm-project11\\llvm-11.0.0.src\\include",
+              "E:\\llvm\\llvm-project-llvmorg-13.0.0\\llvm\\include",
+              "E:\\nice994-github\\SVF\\include"
+              //"E:\\llvm\\llvm-project-10.0.0\\llvm\\include"
+          ],
+          "defines": [
+              "_DEBUG",
+              "UNICODE",
+              "_UNICODE"
+          ],
+          "compilerPath": "D:\\LLVM\\bin\\gcc.exe",
+          "cStandard": "gnu17",
+          "cppStandard": "gnu++14",
+          "intelliSenseMode": "windows-gcc-x64"
+      }
+  ],
+  "version": 4
 }

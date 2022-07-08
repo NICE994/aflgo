@@ -40,6 +40,9 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
+#include <set>
+#include <map>
+
 #include "llvm/ADT/Statistic.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LegacyPassManager.h"
@@ -62,6 +65,17 @@
 #endif
 
 using namespace llvm;
+using namespace std;
+
+std::map<BasicBlock*,std::set<BasicBlock*>> target_suffix;
+std::set<BasicBlock*> all_suffix;
+std::set<BasicBlock*> nonreachable;
+u32 total_suffix_num;
+
+std::map<uint32_t, BasicBlock *> ID2BB;
+// std::map< BasicBlock *,uint32_t> BB2ID;
+
+
 
 cl::opt<std::string> DistanceFile(
     "distance",
@@ -130,6 +144,7 @@ namespace {
 
 }
 
+Module* M2;
 char AFLCoverage::ID = 0;
 
 static void getDebugLoc(const Instruction *I, std::string &Filename,
@@ -185,7 +200,127 @@ static bool isBlacklisted(const Function *F) {
   return false;
 }
 
+
+void readSuffix() {
+  std::string out_dir = OutDirectory;
+  out_dir += "/suffix.txt";
+  FILE* suffix_file = fopen(out_dir.c_str(),"r");
+  char buf[1024];
+  if (suffix_file==NULL){
+    errs() <<out_dir<< "suffix.txt not exist\n";
+    return;
+    // FATAL("suffix.txt not exist");
+  }
+
+	std::cout << "loading suffix..." << std::endl;
+  
+  //第一行存储后继基本块的总数
+  if(fgets(buf,sizeof(buf),suffix_file)!=NULL){
+    char *token;
+    token = strtok(buf," ");    
+    total_suffix_num = atoi(token);
+  }
+  std::cout << "total_suffix_num: "<<total_suffix_num << std::endl;
+
+  // std::set<BasicBlock *> temp_suffix;
+  int target_id=0;
+  while(fgets(buf, sizeof(buf), suffix_file) != NULL) {
+    char* token;
+    token = strtok(buf, " ");
+    int temp_target_id = atoi(token);
+    token = strtok(NULL, " ");
+    int suffix_id = atoi(token);
+    // errs() << "first: " << temp_target_id << " suffix: " << suffix_id << "\n";
+    // if (temp_target_id != target_id)
+    // {
+      // target_suffix[ID2BB[target_id]] = temp_suffix;
+      // temp_suffix.clear();
+    //   target_id = temp_target_id;
+    // }
+
+    // temp_suffix.insert(ID2BB[suffix_id]);
+    all_suffix.insert(ID2BB[suffix_id]);
+	}
+  fclose(suffix_file);
+
+}
+
+void readNonreachable() {
+  FILE* nonreachable_file = fopen("nonreachable.txt","r");
+  char buf[1024];
+  if (nonreachable_file==NULL){
+    errs() << "nonreachable.txt not exist\n";
+    return;
+    // FATAL("suffix.txt not exist");
+  }
+
+	std::cout << "loading nonreachable..." << std::endl;
+  int num = 0;
+
+  std::set<BasicBlock *> temp_suffix;
+  while(fgets(buf, sizeof(buf), nonreachable_file) != NULL) {
+    char* token;
+    token = strtok(buf, " ");
+    int nonID = atoi(token);
+    // errs() << "first: " << nonID << "\n";
+    nonreachable.insert(ID2BB[nonID]);
+    num++;
+  }
+  fclose(nonreachable_file);
+  errs() << "nonreachable num: " << num << "\n";
+}
+
+
+void setBBID(Module &M){
+  uint32_t bb_id = 0;
+  uint32_t line = 0;
+
+  FILE *bc_file = fopen("bbinfo-bc.txt", "r");
+  FILE *ci_bc_file = fopen("bbinfo-ci-bc.txt", "r");
+  char buf_bc[1024];
+  char buf_ci_bc[1024];
+  char temp[1024];
+  if (bc_file == NULL || ci_bc_file == NULL)
+  {
+    // errs() << "bbinfo-bc.txt  or bbinfo-ci-bc.txt not exist\n";
+    // return;
+    FATAL("bbinfo-bc.txt  or bbinfo-ci-bc.txt not exist\n");
+  }
+
+  std::cout << "adjust bbinfo..." << std::endl;
+
+  for (auto &F : M)
+  {
+    for(auto &BB:F){
+      if(fgets(buf_bc,sizeof(buf_bc),bc_file)!=NULL){
+        if(fgets(buf_ci_bc,sizeof(buf_ci_bc),ci_bc_file)!=NULL){
+          // 如果两个值不相等，需要调整
+          // errs() << bb_id<<" bbinfo: "<<buf_bc<<"  "<<buf_ci_bc << "\n";
+          if(strcmp(buf_bc,buf_ci_bc)){
+            if (fgets(buf_ci_bc, sizeof(buf_ci_bc), ci_bc_file) != NULL){
+              if (strcmp(buf_bc, buf_ci_bc)){
+                errs() << bb_id<<" bbinfo: "<<buf_bc<<"  "<<buf_ci_bc << "\n";
+                FATAL("something goes wrong!!!\n");
+              }
+              bb_id++;
+            }
+          }
+        }
+      }
+      ID2BB[bb_id] = &BB;
+      bb_id++;
+    }
+  }
+  fclose(bc_file);
+  fclose(ci_bc_file);
+  errs() << "total bb_id: " << bb_id << "\n";
+
+  readSuffix();
+  readNonreachable();
+}
+
 bool AFLCoverage::runOnModule(Module &M) {
+  M2 = &M;
 
   bool is_aflgo = false;
   bool is_aflgo_preprocessing = false;
@@ -447,6 +582,7 @@ bool AFLCoverage::runOnModule(Module &M) {
 #ifdef __x86_64__
     IntegerType *LargestType = Int64Ty;
     ConstantInt *MapCntLoc = ConstantInt::get(LargestType, MAP_SIZE + 8);
+    ConstantInt *MapTargetLoc = ConstantInt::get(LargestType, MAP_SIZE + 24);
 #else
     IntegerType *LargestType = Int32Ty;
     ConstantInt *MapCntLoc = ConstantInt::get(LargestType, MAP_SIZE + 4);
@@ -461,9 +597,23 @@ bool AFLCoverage::runOnModule(Module &M) {
         new GlobalVariable(M, PointerType::get(Int8Ty, 0), false,
                            GlobalValue::ExternalLinkage, 0, "__afl_area_ptr");
 
+
+  GlobalVariable *AFLMapPtrSuf = (GlobalVariable*)M.getOrInsertGlobal("__afl_area_ptr_suf",PointerType::get(Int8Ty, 0),[]() -> GlobalVariable* {
+      return new GlobalVariable(*M2, PointerType::get(IntegerType::getInt8Ty(M2->getContext()), 0), false,
+                         GlobalValue::ExternalLinkage, 0, "__afl_area_ptr_suf");
+  });
+
+  GlobalVariable *AFLMapPtrSufBB = (GlobalVariable*)M.getOrInsertGlobal("__afl_area_ptr_suf_bb",PointerType::get(Int8Ty, 0),[]() -> GlobalVariable* {
+      return new GlobalVariable(*M2, PointerType::get(IntegerType::getInt8Ty(M2->getContext()), 0), false,
+                         GlobalValue::ExternalLinkage, 0, "__afl_area_ptr_suf_bb");
+    });
+
     GlobalVariable *AFLPrevLoc = new GlobalVariable(
         M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_loc",
         0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
+
+    setBBID(M);
+    uint32_t suf_bb_id = 0;
 
     for (auto &F : M) {
 
@@ -544,6 +694,38 @@ bool AFLCoverage::runOnModule(Module &M) {
         Value *Incr = IRB.CreateAdd(Counter, ConstantInt::get(Int8Ty, 1));
         IRB.CreateStore(Incr, MapPtrIdx)
            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        
+        //对后继进行插桩
+        if(all_suffix.find(&BB)!=all_suffix.end()){
+          /* Load SHM pointer */
+
+          LoadInst *MapPtrSuf = IRB.CreateLoad(AFLMapPtrSuf);
+          MapPtrSuf->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+          Value *MapPtrIdxSuf =
+              IRB.CreateGEP(MapPtrSuf, IRB.CreateXor(PrevLocCasted, CurLoc));
+
+          /* Update bitmap */
+
+          LoadInst *Counter = IRB.CreateLoad(MapPtrIdxSuf);
+          Counter->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+          Value *Incr = IRB.CreateAdd(Counter, ConstantInt::get(Int8Ty, 1));
+          IRB.CreateStore(Incr, MapPtrIdxSuf)
+              ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+
+          // 对后继的基本块进行插桩
+          
+          llvm::LoadInst *MapPtrSufBB = IRB.CreateLoad(AFLMapPtrSufBB);
+          // ConstantInt *cur_id = llvm::ConstantInt::get(IntegerType::getInt32Ty(*C), bb_id);
+          ConstantInt *cur_id = llvm::ConstantInt::get(IntegerType::getInt32Ty(C), suf_bb_id);
+
+          llvm::Value *MapPtrIdxSufBB = IRB.CreateGEP(MapPtrSufBB, cur_id);
+          llvm::LoadInst *CounterBB = IRB.CreateLoad(MapPtrIdxSufBB);
+          llvm::Value *IncrBB = IRB.CreateAdd(CounterBB, ConstantInt::get(Int8Ty, 1));
+          IRB.CreateStore(IncrBB, MapPtrIdxSufBB)
+              ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+          suf_bb_id++;
+          // errs() << suf_bb_id << "\n";
+        }
 
         /* Set prev_loc to cur_loc >> 1 */
 
@@ -552,6 +734,7 @@ bool AFLCoverage::runOnModule(Module &M) {
         Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
         if (distance >= 0) {
+          // errs() << distance << "\n";
 
           ConstantInt *Distance =
               ConstantInt::get(LargestType, (unsigned) distance);
@@ -580,10 +763,25 @@ bool AFLCoverage::runOnModule(Module &M) {
 
         }
 
+        //标记target有无被触发
+				if (distance == 0) {
+          //写共享内存MapTargetLoc
+          Value *MapTargetPtr = IRB.CreateBitCast(
+              IRB.CreateGEP(MapPtr, MapTargetLoc), LargestType->getPointerTo());
+          LoadInst *MapCnt = IRB.CreateLoad(MapTargetPtr);
+          MapCnt->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+
+          Value *IncrCnt = IRB.CreateAdd(MapCnt, One);
+          IRB.CreateStore(IncrCnt, MapTargetPtr)
+              ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+				}
+
+
         inst_blocks++;
 
       }
     }
+    errs() << "suf_bb_id: " << suf_bb_id << "\n";
   }
 
   /* Say something nice. */
@@ -615,7 +813,7 @@ static void registerAFLPass(const PassManagerBuilder &,
 
 
 static RegisterStandardPasses RegisterAFLPass(
-    PassManagerBuilder::EP_OptimizerLast, registerAFLPass);
+    PassManagerBuilder::EP_ModuleOptimizerEarly, registerAFLPass);
 
 static RegisterStandardPasses RegisterAFLPass0(
     PassManagerBuilder::EP_EnabledOnOptLevel0, registerAFLPass);
