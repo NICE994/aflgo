@@ -514,6 +514,7 @@ bool AFLCoverage::runOnModule(Module &M) {
 
           BB.setName(bb_name + ":");
           /*xy
+          */
           if (!BB.hasName()) {
             std::string newname = bb_name + ":";
             Twine t(newname);
@@ -522,7 +523,6 @@ bool AFLCoverage::runOnModule(Module &M) {
             MallocAllocator Allocator;
             BB.setValueName(ValueName::Create(NameRef, Allocator));
           }
-          */
 
           bbnames << BB.getName().str() << "\n";
           has_BBs = true;
@@ -549,7 +549,7 @@ bool AFLCoverage::runOnModule(Module &M) {
         std::error_code EC;
         raw_fd_ostream cfgFile(cfgFileName, EC, sys::fs::OF_None);
         if (!EC) {
-          //WriteGraph(cfgFile, &F, true); //不再对function级画Intraprocedure控制流图
+          WriteGraph(cfgFile, &F, true); //不再对function级画Intraprocedure控制流图
         }
 
         /*
