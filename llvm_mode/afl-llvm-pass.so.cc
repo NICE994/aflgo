@@ -74,7 +74,7 @@ std::set<BasicBlock*> nonreachable;
 u32 total_suffix_num;
 
 std::map<uint32_t, BasicBlock *> ID2BB;
-// std::map< BasicBlock *,uint32_t> BB2ID;
+std::map< BasicBlock *,uint32_t> BB2ID;
 
 
 
@@ -395,6 +395,7 @@ void setBBID(Module &M){
       }
 
       ID2BB[bb_id] = &BB;
+      BB2ID[&BB] = bb_id;
       bb_id++;
     }
   }
@@ -806,7 +807,7 @@ bool AFLCoverage::runOnModule(Module &M) {
           
           llvm::LoadInst *MapPtrSufBB = IRB.CreateLoad(AFLMapPtrSufBB);
           // ConstantInt *cur_id = llvm::ConstantInt::get(IntegerType::getInt32Ty(*C), bb_id);
-          ConstantInt *cur_id = llvm::ConstantInt::get(IntegerType::getInt32Ty(C), suf_bb_id);
+          ConstantInt *cur_id = llvm::ConstantInt::get(IntegerType::getInt32Ty(C), BB2ID[&BB]);
 
           llvm::Value *MapPtrIdxSufBB = IRB.CreateGEP(MapPtrSufBB, cur_id);
           llvm::LoadInst *CounterBB = IRB.CreateLoad(MapPtrIdxSufBB);

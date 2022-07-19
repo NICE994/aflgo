@@ -127,6 +127,7 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            no_arith,                  /* Skip most arithmetic ops         */
            shuffle_queue,             /* Shuffle input queue?             */
            bitmap_changed = 1,        /* Time to update bitmap?           */
+           bitmap_changed_suf_bb = 1,        /* Time to update bitmap?           */
            qemu_mode,                 /* Running in QEMU mode?            */
            skip_requested,            /* Skip request, via SIGUSR1        */
            run_over10m,               /* Run time over 10 minutes?        */
@@ -892,6 +893,26 @@ EXP_ST void write_bitmap(void) {
 
 }
 
+EXP_ST void write_bitmap_suf_bb(void) {
+
+  u8* fname;
+  s32 fd;
+
+  if (!bitmap_changed_suf_bb) return;
+  bitmap_changed_suf_bb = 0;
+
+  fname = alloc_printf("%s/fuzz_bitmap_suf_bb", out_dir);
+  fd = open(fname, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+  if (fd < 0) PFATAL("Unable to open '%s'", fname);
+
+  ck_write(fd, virgin_bits_suf_bb, MAP_SIZE, fname);
+
+  close(fd);
+  ck_free(fname);
+
+}
+
 
 /* Read bitmap from file. This is for the -B option again. */
 
@@ -971,7 +992,7 @@ static inline u8 presuf_has_new_bits(u8* virgin_map, u8* trace_map) {
 
   }
 
-  //if (ret && virgin_map == virgin_bits) bitmap_changed = 1;
+  if (ret && virgin_map == virgin_bits_suf_bb) bitmap_changed_suf_bb = 1;
 
   return ret;
 }
@@ -4207,6 +4228,7 @@ static void show_stats(void) {
     write_stats_file(t_byte_ratio,t_byte_ratio_suffix,t_byte_ratio_suffix_target,t_byte_ratio_suffix_bb, stab_ratio, avg_exec);
     save_auto();
     write_bitmap();
+    write_bitmap_suf_bb();
 
   }
 
@@ -8478,6 +8500,7 @@ int main(int argc, char** argv) {
   if (queue_cur) show_stats();
 
   write_bitmap();
+  write_bitmap_suf_bb();
   write_stats_file(0, 0, 0, 0, 0, 0);
   save_auto();
 
