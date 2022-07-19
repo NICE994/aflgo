@@ -2918,6 +2918,17 @@ static void perform_dry_run(char** argv) {
     res = calibrate_case(argv, q, use_mem, 0, 1);
     if(q->ttarget_excutes>0){
       TTarget_seed++;
+      // target_path++;
+      // 可以在这里将in里面的seed写入target
+      u8 *fn_target = "";
+      s32 fd_target;
+      // fn_target = alloc_printf("%s/target/id:%06u,%llu,%s", out_dir, queued_paths,
+      //                 get_cur_time() - start_time);
+      fn_target = alloc_printf("%s/target/%s", out_dir, fn);
+      fd_target = open(fn_target, O_WRONLY | O_CREAT | O_EXCL, 0600);
+      if (fd_target < 0) PFATAL("Unable to create '%s'", fn_target);
+      ck_write(fd_target, use_mem, q->len, fn_target);
+      close(fd_target);
     }
     ck_free(use_mem);
 
@@ -3315,8 +3326,10 @@ static void write_crash_readme(void) {
 static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
   u8  *fn = "";
+  u8  *fn_target = "";
   u8  hnb;
   s32 fd;
+  s32 fd_target;
   u8  keeping = 0, res;
 
   if (fault == crash_mode) {
@@ -3341,9 +3354,12 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #ifndef SIMPLE_FILES
 
-    fn = alloc_printf("%s/queue/id:%06u,%llu,%s", out_dir, queued_paths,
-                      get_cur_time() - start_time,
-                      describe_op(hnb));
+      fn = alloc_printf("%s/queue/id:%06u,%llu,%s", out_dir, queued_paths,
+                        get_cur_time() - start_time,
+                        describe_op(hnb));
+      fn_target = alloc_printf("%s/target/id:%06u,%llu,%s", out_dir, queued_paths,
+                               get_cur_time() - start_time,
+                               describe_op(hnb));
 
 #else
 
@@ -3375,6 +3391,11 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
     if(queue_top->ttarget_excutes>0){
       TTarget_seed++;
+      // target_path++;
+      fd_target = open(fn_target, O_WRONLY | O_CREAT | O_EXCL, 0600);
+      if (fd_target < 0) PFATAL("Unable to create '%s'", fn_target);
+      ck_write(fd_target, mem, len, fn_target);
+      close(fd_target);
     }
     keeping = 1;
 
@@ -3971,6 +3992,10 @@ static void maybe_delete_out_dir(void) {
   ck_free(fn);
 
   fn = alloc_printf("%s/queue", out_dir);
+  if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
+  ck_free(fn);
+
+  fn = alloc_printf("%s/target", out_dir);
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
   ck_free(fn);
 
@@ -7448,6 +7473,10 @@ EXP_ST void setup_dirs_fds(void) {
   /* Queue directory for any starting & discovered paths. */
 
   tmp = alloc_printf("%s/queue", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+  
+  tmp = alloc_printf("%s/target", out_dir);
   if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
   ck_free(tmp);
 

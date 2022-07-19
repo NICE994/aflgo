@@ -69,6 +69,7 @@ using namespace std;
 
 std::map<BasicBlock*,std::set<BasicBlock*>> target_suffix;
 std::set<BasicBlock*> all_suffix;
+std::set<BasicBlock*> all_target;
 std::set<BasicBlock*> nonreachable;
 u32 total_suffix_num;
 
@@ -200,6 +201,31 @@ static bool isBlacklisted(const Function *F) {
   return false;
 }
 
+void readTarget(){
+  std::string out_dir = OutDirectory;
+  out_dir += "/targets_id.txt";
+  FILE* target_file = fopen(out_dir.c_str(),"r");
+  char buf[1024];
+  if (target_file==NULL){
+    errs() <<out_dir<< "target_id.txt not exist\n";
+    return;
+    // FATAL("target_file.txt not exist");
+  }
+
+	std::cout << "loading target_file..." << std::endl;
+
+  int target_bbid = 0;
+  while(fgets(buf,sizeof(buf),target_file)!=NULL){
+    char *token;
+    token = strtok(buf," ");    
+    target_bbid = atoi(token);
+    all_target.insert(ID2BB[target_bbid]);
+  }
+
+
+  fclose(target_file);
+  
+}
 
 void readSuffix() {
   std::string out_dir = OutDirectory;
@@ -276,47 +302,111 @@ void setBBID(Module &M){
   uint32_t line = 0;
 
   FILE *bc_file = fopen("bbinfo-bc.txt", "r");
+  FILE *bc_file_next = fopen("bbinfo-bc.txt", "r");
   FILE *ci_bc_file = fopen("bbinfo-ci-bc.txt", "r");
+  FILE *ci_bc_file_next = fopen("bbinfo-ci-bc.txt", "r");
   char buf_bc[1024];
+  char buf_bc_next[1024];
   char buf_ci_bc[1024];
+  char buf_ci_bc_next[1024];
   char temp[1024];
-  if (bc_file == NULL || ci_bc_file == NULL)
+  if (bc_file == NULL || ci_bc_file == NULL || bc_file_next ==NULL || ci_bc_file==NULL)
   {
     // errs() << "bbinfo-bc.txt  or bbinfo-ci-bc.txt not exist\n";
     // return;
     FATAL("bbinfo-bc.txt  or bbinfo-ci-bc.txt not exist\n");
   }
-
+  if(!fgets(buf_bc_next,sizeof(buf_bc_next),bc_file_next)!=NULL){
+    FATAL("bbinfo-bc.txt  or bbinfo-ci-bc.txt cannot read next\n");
+  }
+  if( !fgets(buf_ci_bc_next,sizeof(buf_ci_bc_next),ci_bc_file_next)!=NULL){
+    FATAL("bbinfo-bc.txt  or bbinfo-ci-bc.txt cannot read next\n");
+  }
   std::cout << "adjust bbinfo..." << std::endl;
+  uint32_t is_external = 0;
 
   for (auto &F : M)
   {
     for(auto &BB:F){
-      if(fgets(buf_bc,sizeof(buf_bc),bc_file)!=NULL){
-        if(fgets(buf_ci_bc,sizeof(buf_ci_bc),ci_bc_file)!=NULL){
-          // 如果两个值不相等，需要调整
-          // errs() << bb_id<<" bbinfo: "<<buf_bc<<"  "<<buf_ci_bc << "\n";
-          if(strcmp(buf_bc,buf_ci_bc)){
-            if (fgets(buf_ci_bc, sizeof(buf_ci_bc), ci_bc_file) != NULL){
-              if (strcmp(buf_bc, buf_ci_bc)){
-                errs() << bb_id<<" bbinfo: "<<buf_bc<<"  "<<buf_ci_bc << "\n";
+      is_external = 0;
+      for (auto &I : BB) {
+        
+        std::string filename;
+        unsigned line_1;
+
+        getDebugLoc(&I, filename, line_1);
+        
+          /* Don't worry about external libs */
+          static const std::string Xlibs("/usr/");
+          if (filename.empty() || line_1 == 0)
+            continue;
+          if (!filename.compare(0, Xlibs.size(), Xlibs)){
+            is_external = 1;
+          }
+
+      }
+      if(is_external == 1){
+        continue;
+      }
+      char null_bbinfo[10] = "{ }";
+
+
+      // 这个对齐方式在某些程序中仍然存在问题
+      {
+        if(fgets(buf_bc_next,sizeof(buf_bc_next),bc_file_next)!=NULL && fgets(buf_bc,sizeof(buf_bc),bc_file)!=NULL){
+          while(fgets(buf_ci_bc_next,sizeof(buf_ci_bc_next),ci_bc_file_next)!=NULL && fgets(buf_ci_bc,sizeof(buf_ci_bc),ci_bc_file)!=NULL  ){
+            // errs() << bb_id << " 22 bbinfo: " << buf_bc<< buf_bc_next  << "  " << buf_ci_bc << buf_ci_bc_next << "\n";
+            // 如果两个值不相等，需要调整
+            // errs() << bb_id<<" bbinfo: "<<buf_bc<<"  "<<buf_ci_bc << "\n";
+            if (strcmp(buf_bc, buf_ci_bc)){
+              // 如果ci.bc中出现了"{ }""
+              if(strstr(buf_ci_bc,null_bbinfo)){
+                // case2: bc和ci.bc的下一行一样
+                if(!strcmp(buf_bc,buf_ci_bc_next)){
+                  fgets(buf_ci_bc, sizeof(buf_ci_bc), ci_bc_file);
+                  fgets(buf_ci_bc_next, sizeof(buf_ci_bc_next), ci_bc_file_next);
+            // errs() << bb_id << " 33 bbinfo: " << buf_bc<< buf_bc_next  << "  " << buf_ci_bc << buf_ci_bc_next << "\n";
+
+                  bb_id++;
+                  break;
+                }
+                // case1: bc的下一行和ci.bc的下一行一样
+                else if(!strcmp(buf_bc_next,buf_ci_bc_next)){
+                  break;
+                }
+                // case3: bc和ci.bc的下一行不一样，但ci.bc的下一行是"{ }"
+                else if(strstr(buf_ci_bc_next,null_bbinfo)){
+                  bb_id++;
+                  continue;
+                }
+                // case4: bc和ci.bc的下一行不一样，且ci.bc的下一行不是"{ }" ERROR
+                else{
+                  errs() << bb_id << " 11 bbinfo: " << buf_bc<< buf_bc_next  << "  " << buf_ci_bc << buf_ci_bc_next << "\n";
+                  FATAL("something goes wrong!!!\n");
+                }
+              }else{
+                errs() << bb_id << " bbinfo: " << buf_bc << "  " << buf_ci_bc << "\n";
                 FATAL("something goes wrong!!!\n");
               }
-              bb_id++;
             }
+            break;
           }
         }
       }
+
       ID2BB[bb_id] = &BB;
       bb_id++;
     }
   }
   fclose(bc_file);
   fclose(ci_bc_file);
+  fclose(bc_file_next);
+  fclose(ci_bc_file_next);
   errs() << "total bb_id: " << bb_id << "\n";
 
   readSuffix();
   readNonreachable();
+  readTarget();
 }
 
 bool AFLCoverage::runOnModule(Module &M) {
@@ -764,7 +854,9 @@ bool AFLCoverage::runOnModule(Module &M) {
         }
 
         //标记target有无被触发
-				if (distance == 0) {
+          // 在有些commit中，AFLGO对一些target没有计算距离，从而不能标记target
+				if (all_target.find(&BB) != all_target.end()) {
+          errs() << "target !\n";
           //写共享内存MapTargetLoc
           Value *MapTargetPtr = IRB.CreateBitCast(
               IRB.CreateGEP(MapPtr, MapTargetLoc), LargestType->getPointerTo());
