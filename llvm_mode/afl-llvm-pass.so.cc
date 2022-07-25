@@ -807,7 +807,8 @@ bool AFLCoverage::runOnModule(Module &M) {
           
           llvm::LoadInst *MapPtrSufBB = IRB.CreateLoad(AFLMapPtrSufBB);
           // ConstantInt *cur_id = llvm::ConstantInt::get(IntegerType::getInt32Ty(*C), bb_id);
-          ConstantInt *cur_id = llvm::ConstantInt::get(IntegerType::getInt32Ty(C), BB2ID[&BB]);
+          // ConstantInt *cur_id = llvm::ConstantInt::get(IntegerType::getInt32Ty(C), BB2ID[&BB]);
+          ConstantInt *cur_id = llvm::ConstantInt::get(IntegerType::getInt32Ty(C), suf_bb_id);
 
           llvm::Value *MapPtrIdxSufBB = IRB.CreateGEP(MapPtrSufBB, cur_id);
           llvm::LoadInst *CounterBB = IRB.CreateLoad(MapPtrIdxSufBB);
