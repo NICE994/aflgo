@@ -26,6 +26,8 @@
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
 
+#define DEBUG1 fileonly
+
 #include "config.h"
 #include "types.h"
 #include "debug.h"
@@ -45,6 +47,7 @@
 #include <termios.h>
 #include <dlfcn.h>
 #include <sched.h>
+#include <stdarg.h>
 
 #include <sys/wait.h>
 #include <sys/time.h>
@@ -167,6 +170,7 @@ static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    child_timed_out;   /* Traced process timed out?        */
 
 EXP_ST u32 queued_paths,              /* Total number of queued testcases */
+           target_paths_total,
            queued_variable,           /* Testcases with variable behavior */
            queued_at_start,           /* Total number of initial inputs   */
            queued_discovered,         /* Items discovered during this run */
@@ -246,6 +250,7 @@ struct queue_entry {
   u8* fname;                          /* File name for the test case      */
   u32 len;                            /* Input length                     */
   u64 ttarget_excutes;
+  u64 crash_excutes;
 
   u8  cal_failed,                     /* Calibration failed?              */
       trim_done,                      /* Trimmed?                         */
@@ -296,6 +301,7 @@ static struct extra_data* a_extras;   /* Automatically selected extras    */
 static u32 a_extras_cnt;              /* Total number of tokens available */
 
 static int TTarget_seed = 0;
+static int crashSite_seed = 0;
 
 static double cur_distance = -1.0;     /* Distance of executed input       */
 static double max_distance = -1.0;     /* Maximal distance for any input   */
@@ -303,6 +309,8 @@ static double min_distance = -1.0;     /* Minimal distance for any input   */
 static u32 t_x = 10;                  /* Time to exploitation (Default: 10 min) */
 
 static u8* (*post_handler)(u8* buf, u32* len);
+
+static FILE* distance_log;
 
 /* Interesting values, as per config.h */
 
@@ -350,6 +358,21 @@ enum {
   /* 04 */ FAULT_NOINST,
   /* 05 */ FAULT_NOBITS
 };
+
+void fileonly (char const *fmt, ...) { 
+    static FILE *f = NULL;
+    if (f == NULL) {
+      u8 * fn = alloc_printf("%s/target_seed_time.log", out_dir);
+      f= fopen(fn, "w");
+      ck_free(fn);
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+}
+
+
 
 
 /* Get unix time in milliseconds */
@@ -1506,7 +1529,7 @@ EXP_ST void setup_shm(void) {
   memset(virgin_crash, 255, MAP_SIZE);
 
   /* Allocate 24 byte more for distance info */
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 16 + 16, IPC_CREAT | IPC_EXCL | 0600);
+  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 16 + 16 + 16 + 16, IPC_CREAT | IPC_EXCL | 0600);
   shm_id_suf = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
   shm_id_suf_bb = shmget(IPC_PRIVATE, MAP_SIZE , IPC_CREAT | IPC_EXCL | 0600);
 
@@ -2444,7 +2467,7 @@ static u8 run_target(char** argv, u32 timeout) {
      must prevent any earlier operations from venturing into that
      territory. */
 
-  memset(trace_bits, 0, MAP_SIZE + 16 + 16);
+  memset(trace_bits, 0, MAP_SIZE + 16 + 16 + 16 + 16);
   memset(trace_bits_suf, 0, MAP_SIZE);
   memset(trace_bits_suf_bb, 0, MAP_SIZE );
   MEM_BARRIER();
@@ -2760,7 +2783,9 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
     }
     
   u64* targetSeed = (u64*) (trace_bits + MAP_SIZE + 24);
+  u64* CrashSeed = (u64*) (trace_bits + MAP_SIZE + 56);
   q->ttarget_excutes = (u64 ) (*targetSeed);
+  q->crash_excutes = (u64 ) (*CrashSeed);
 
     cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
 
@@ -2937,7 +2962,12 @@ static void perform_dry_run(char** argv) {
     close(fd);
 
     res = calibrate_case(argv, q, use_mem, 0, 1);
+
+    // 消融实验
+    fprintf(distance_log, " queue_name:%s, distance = %4lf\n", q->fname, q->distance);
+
     if(q->ttarget_excutes>0){
+      DEBUG1("corpus Find q->name: %s ,execute targets at %llu ms.\n",q->fname, get_cur_time() - start_time);
       TTarget_seed++;
       // target_path++;
       // 可以在这里将in里面的seed写入target
@@ -2950,6 +2980,11 @@ static void perform_dry_run(char** argv) {
       if (fd_target < 0) PFATAL("Unable to create '%s'", fn_target);
       ck_write(fd_target, use_mem, q->len, fn_target);
       close(fd_target);
+      target_paths_total++;
+      if(q->crash_excutes>0){
+        crashSite_seed++;
+        DEBUG1("CCCcorpus Find q->name: %s ,execute crash at %llu ms.\n",q->fname, get_cur_time() - start_time);
+      }
     }
     ck_free(use_mem);
 
@@ -3122,7 +3157,11 @@ static void perform_dry_run(char** argv) {
   }
 
   OKF("All test cases processed.");
-
+  char* env_var = getenv("TEST_SEED");
+  if (env_var) {
+        // The environment variable is set, so exit with code 1
+        exit(1);
+  }
 }
 
 
@@ -3411,12 +3450,18 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     close(fd);
 
     if(queue_top->ttarget_excutes>0){
+      DEBUG1("Find q->name: %s ,execute targets at %llu ms.\n",queue_top->fname, get_cur_time() - start_time);
       TTarget_seed++;
       // target_path++;
       fd_target = open(fn_target, O_WRONLY | O_CREAT | O_EXCL, 0600);
       if (fd_target < 0) PFATAL("Unable to create '%s'", fn_target);
       ck_write(fd_target, mem, len, fn_target);
       close(fd_target);
+      target_paths_total++;
+      if(queue_top->crash_excutes>0){
+        crashSite_seed++;
+        DEBUG1("Find q->name: %s ,execute crash at %llu ms.\n",queue_top->fname, get_cur_time() - start_time);
+      }
     }
     keeping = 1;
 
@@ -3523,6 +3568,10 @@ keep_as_crash:
         fn = alloc_printf("%s/crashes/target_id:%06llu,%llu,sig:%02u,%s", out_dir,
                         unique_crashes, get_cur_time() - start_time,
                         kill_signal, describe_op(0));
+        
+        DEBUG1("Find target-crash seed q->name: %s \n",fn);
+        TTarget_seed++;
+        target_paths_total++;
 
       }else{
         fn = alloc_printf("%s/crashes/id:%06llu,%llu,sig:%02u,%s", out_dir,
@@ -3676,6 +3725,7 @@ static void write_stats_file(double bitmap_cvg,double sufbit_cvg,double tarsufbi
              "execs_done        : %llu\n"
              "execs_per_sec     : %0.02f\n"
              "paths_total       : %u\n"
+             "target_paths_total       : %u\n"
              "paths_favored     : %u\n"
              "paths_found       : %u\n"
              "paths_imported    : %u\n"
@@ -3690,6 +3740,7 @@ static void write_stats_file(double bitmap_cvg,double sufbit_cvg,double tarsufbi
              "tarsufbit_cvg        : %0.02f%%\n"
              "tarsufbitbb_cvg        : %0.02f%%\n"
              "TTargetSeeds      : %u\n"
+             "CrashSeeds      : %u\n"
              "unique_crashes    : %llu\n"
              "unique_hangs      : %llu\n"
              "last_path         : %llu\n"
@@ -3703,9 +3754,9 @@ static void write_stats_file(double bitmap_cvg,double sufbit_cvg,double tarsufbi
              "command_line      : %s\n",
              start_time / 1000, get_cur_time() / 1000, getpid(),
              queue_cycle ? (queue_cycle - 1) : 0, total_execs, eps,
-             queued_paths, queued_favored, queued_discovered, queued_imported,
+             queued_paths,target_paths_total, queued_favored, queued_discovered, queued_imported,
              max_depth, current_entry, pending_favored, pending_not_fuzzed,
-             queued_variable, stability, bitmap_cvg,sufbit_cvg,tarsufbit_cvg,tarsufbitbb_cvg,TTarget_seed,  unique_crashes,
+             queued_variable, stability, bitmap_cvg,sufbit_cvg,tarsufbit_cvg,tarsufbitbb_cvg,TTarget_seed,crashSite_seed, unique_crashes,
              unique_hangs, last_path_time / 1000, last_crash_time / 1000,
              last_hang_time / 1000, total_execs - last_crash_execs,
              exec_tmout, use_banner,
@@ -4554,6 +4605,8 @@ static void show_stats(void) {
   SAYF(bV bSTOP "TTargetSeeds : " cRST "%-36d  " bSTG bV bSTOP
        "     ratio : " cRST "%-10s " bSTG bV "\n", TTarget_seed,tmp);
        
+  SAYF(bV bSTOP "CrashSiteSeeds:" cRST "%-36d  " bSTG bV bSTOP
+       "     ratio : " cRST "%-10s " bSTG bV "\n", crashSite_seed,tmp);
 
 
   sprintf(tmp, "%s/%s, %s/%s",
@@ -5114,7 +5167,7 @@ static u32 calculate_score(struct queue_entry* q) {
   if (perf_score > HAVOC_MAX_MULT * 100) perf_score = HAVOC_MAX_MULT * 100;
 
   /* AFLGO-DEBUGGING */
-  fprintf(stderr, "[Time %llu] q->distance: %4lf, max_distance: %4lf min_distance: %4lf, T: %4.3lf, power_factor: %4.3lf, adjusted perf_score: %4d\n", t, q->distance, max_distance, min_distance, T, power_factor, perf_score);
+  fprintf(stderr, "[Time %llu] q->fname: %s,q->distance: %4lf, max_distance: %4lf min_distance: %4lf, T: %4.3lf, power_factor: %4.3lf, adjusted perf_score: %4d\n", t,q->fname, q->distance, max_distance, min_distance, T, power_factor, perf_score);
 
   return perf_score;
 
@@ -8416,6 +8469,10 @@ int main(int argc, char** argv) {
   else
     use_argv = argv + optind;
 
+  u8* tmp = alloc_printf("%s/distance.log",out_dir);
+  distance_log = fopen(tmp,"w");
+  ck_free(tmp);
+
   perform_dry_run(use_argv);
 
   cull_queue();
@@ -8522,6 +8579,7 @@ stop_fuzzing:
   fclose(plot_file);
   destroy_queue();
   destroy_extras();
+  fclose(distance_log);
   ck_free(target_path);
   ck_free(sync_id);
 

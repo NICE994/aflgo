@@ -70,6 +70,7 @@ using namespace std;
 std::map<BasicBlock*,std::set<BasicBlock*>> target_suffix;
 std::set<BasicBlock*> all_suffix;
 std::set<BasicBlock*> all_target;
+std::set<BasicBlock*> all_crash;
 std::set<BasicBlock*> nonreachable;
 u32 total_suffix_num;
 
@@ -199,6 +200,32 @@ static bool isBlacklisted(const Function *F) {
   }
 
   return false;
+}
+
+void readCrash(){
+  std::string out_dir = OutDirectory;
+  out_dir += "/crash_id.txt";
+  FILE* target_file = fopen(out_dir.c_str(),"r");
+  char buf[1024];
+  if (target_file==NULL){
+    errs() <<out_dir<< "crash_id.txt not exist\n";
+    return;
+    // FATAL("target_file.txt not exist");
+  }
+
+	std::cout << "loading crash_file..." << std::endl;
+
+  int target_bbid = 0;
+  while(fgets(buf,sizeof(buf),target_file)!=NULL){
+    char *token;
+    token = strtok(buf," ");    
+    target_bbid = atoi(token);
+    all_crash.insert(ID2BB[target_bbid]);
+  }
+
+
+  fclose(target_file);
+  
 }
 
 void readTarget(){
@@ -408,6 +435,7 @@ void setBBID(Module &M){
   readSuffix();
   readNonreachable();
   readTarget();
+  readCrash();
 }
 
 bool AFLCoverage::runOnModule(Module &M) {
@@ -674,6 +702,7 @@ bool AFLCoverage::runOnModule(Module &M) {
     IntegerType *LargestType = Int64Ty;
     ConstantInt *MapCntLoc = ConstantInt::get(LargestType, MAP_SIZE + 8);
     ConstantInt *MapTargetLoc = ConstantInt::get(LargestType, MAP_SIZE + 24);
+  ConstantInt *MapCrashLoc = ConstantInt::get(LargestType, MAP_SIZE + 56);
 #else
     IntegerType *LargestType = Int32Ty;
     ConstantInt *MapCntLoc = ConstantInt::get(LargestType, MAP_SIZE + 4);
@@ -867,6 +896,19 @@ bool AFLCoverage::runOnModule(Module &M) {
 
           Value *IncrCnt = IRB.CreateAdd(MapCnt, One);
           IRB.CreateStore(IncrCnt, MapTargetPtr)
+              ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+				}
+
+        if (all_crash.find(&BB) != all_crash.end()) {
+          errs() << "crash !\n";
+          //写共享内存MapTargetLoc
+          Value *MapCrashPtr = IRB.CreateBitCast(
+              IRB.CreateGEP(MapPtr, MapCrashLoc), LargestType->getPointerTo());
+          LoadInst *MapCnt = IRB.CreateLoad(MapCrashPtr);
+          MapCnt->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+
+          Value *IncrCnt = IRB.CreateAdd(MapCnt, One);
+          IRB.CreateStore(IncrCnt, MapCrashPtr)
               ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 				}
 
